@@ -434,7 +434,8 @@ Only output JSON.
 Full production oracle from the intelligent-oracle repo. Supports multiple data sources, resolution rules, and comprehensive validation.
 
 ```python
-# { "Depends": "py-genlayer:test" }
+# v0.1.0
+# { "Depends": "py-genlayer:latest" }
 import json
 from enum import Enum
 from datetime import datetime, timezone
@@ -446,8 +447,7 @@ class Status(Enum):
     RESOLVED = "Resolved"
     ERROR = "Error"
 
-@gl.contract
-class IntelligentOracle:
+class IntelligentOracle(gl.Contract):
     prediction_market_id: str
     title: str
     description: str
@@ -500,7 +500,7 @@ class IntelligentOracle:
         self.earliest_resolution_date = earliest_resolution_date
         self.status = Status.ACTIVE.value
         self.outcome = ""
-        self.creator = gl.message.sender_account
+        self.creator = gl.message.sender_address
 
     @gl.public.view
     def _check_evidence_domain(self, evidence: str) -> bool:
@@ -542,7 +542,7 @@ class IntelligentOracle:
         # Analyze each source
         for url in urls:
             def evaluate_source() -> str:
-                web_data = gl.get_webpage(url, mode="text")
+                web_data = gl.nondet.web.render(url, mode="text")
                 task = f"""
 Analyze this webpage to resolve prediction market.
 Title: {title}
@@ -557,11 +557,11 @@ Return JSON: {{"valid_source": bool, "event_has_occurred": bool,
 "reasoning": str, "outcome": str}}
 Outcome must be from potential_outcomes, "UNDETERMINED", or "ERROR".
 """
-                return gl.exec_prompt(task)
+                return gl.nondet.exec_prompt(task)
 
-            result = gl.eq_principle_prompt_comparative(
+            result = gl.eq_principle.prompt_comparative(
                 evaluate_source,
-                principle="`outcome` must match exactly"
+                "`outcome` must match exactly"
             )
             analyzed_outputs.append((url, json.loads(result)))
 
@@ -576,11 +576,11 @@ Analyses: {analyzed_outputs}
 
 Return JSON: {{"relevant_sources": list, "reasoning": str, "outcome": str}}
 """
-            return gl.exec_prompt(task)
+            return gl.nondet.exec_prompt(task)
 
-        final = gl.eq_principle_prompt_comparative(
+        final = gl.eq_principle.prompt_comparative(
             aggregate_sources,
-            principle="`outcome` must match exactly"
+            "`outcome` must match exactly"
         )
         
         result = json.loads(final)
