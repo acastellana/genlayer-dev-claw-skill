@@ -145,3 +145,25 @@ Bridge path: Base → GenLayer → zkSync → LayerZero → Base. Relay wallet n
 - Pin before deploying contracts (validators must fetch during evaluation)
 - `ipfs.io` gateway is free but unreliable; `gateway.pinata.cloud` is better for pinned content
 - Court sheet images typically 80-85KB PNGs — within GenVM fetch limits
+
+## Additional Learnings (2026-03-09)
+
+### GenVM `gen_getContractSchemaForCode` Failures
+- Returns `invalid_contract not_utf8_text` for some deployed contracts
+- Contracts still function correctly — `sim_getTransactionsForAddress` confirms activity
+- Use `sim_getTransactionsForAddress` to verify contract existence when schema reads fail
+- Likely caused by GenVM version mismatch between deploy time and query time
+
+### `int` Type Still Broken in Contract Storage
+- GenVM does NOT support Python `int` for contract storage fields
+- Use `str` or `u256` instead
+- Contracts deployed with `int` fields fail at schema read time
+
+### Forge 1.5 Dry-Run Default
+- `forge create` in Forge 1.5+ defaults to dry-run and deploys nothing
+- Use Node.js + viem/ethers deploy scripts, or `forge script --broadcast`
+
+### GenLayer Studio Explorer URL Structure
+- `/transactions/<hash>` works (200)
+- `/contracts/<address>` returns 404 — no contract detail pages exist
+- Link to deploy transaction instead of contract address
