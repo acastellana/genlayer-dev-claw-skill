@@ -66,6 +66,19 @@ def deposit(self) -> None:
     self.balances[gl.message.sender_address] += gl.message.value
 ```
 
+### @gl.public.write.min_gas(leader, validator)
+Specify minimum gas requirements.
+
+```python
+@gl.public.write.min_gas(leader=100, validator=20)
+def expensive_op(self) -> None:
+    ...
+
+@gl.public.write.min_gas(leader=100, validator=20).payable
+def expensive_payable(self) -> None:
+    ...
+```
+
 ---
 
 ## gl.message
@@ -75,41 +88,77 @@ Transaction context information.
 | Property | Type | Description |
 |----------|------|-------------|
 | `gl.message.sender_address` | `Address` | Transaction sender |
+| `gl.message.origin_address` | `Address` | Original transaction initiator |
 | `gl.message.value` | `u256` | Attached value (for payable) |
 | `gl.message.contract_address` | `Address` | Current contract address |
+| `gl.message.chain_id` | `u256` | Current chain ID |
 
 ---
 
 ## Non-Deterministic Operations
 
-### gl.nondet.exec_prompt(prompt: str) -> str
+### gl.nondet.exec_prompt(prompt, **config) -> str | dict
 
-Execute an LLM prompt and return the response.
+Execute an LLM prompt. Supports text and JSON response formats, plus multimodal (images).
 
 ```python
-def analyze():
-    result = gl.nondet.exec_prompt("""
-        Classify this text as positive or negative.
-        Text: The product is amazing!
-        Respond with only: positive or negative
-    """)
-    return result.strip().lower()
+# Basic text prompt
+result = gl.nondet.exec_prompt("Classify: positive or negative?")
+
+# JSON response format (returns dict)
+result = gl.nondet.exec_prompt(
+    "Return JSON with sentiment field",
+    response_format='json'
+)
+
+# Multimodal — pass images as bytes
+resp = gl.nondet.web.get("https://ipfs.io/ipfs/QmXyz...")
+result = gl.nondet.exec_prompt(
+    "Describe this image",
+    images=[resp.body]  # list[bytes | Image]
+)
 ```
+
+**Config options:** `response_format` (`'text'` default, or `'json'`), `images` (list of bytes/Image).
 
 **Must be called within an equivalence principle function!**
 
-### gl.nondet.web.render(url: str, mode: str) -> str
-
-Fetch web content.
-
-| Parameter | Description |
-|-----------|-------------|
-| `url` | Target URL |
-| `mode` | `"text"` (plain text) or `"html"` (raw HTML body) |
+### gl.nondet.web — HTTP Methods
 
 ```python
-def fetch_content():
-    return gl.nondet.web.render("https://example.com", mode="text")
+# GET
+resp = gl.nondet.web.get(url, headers={})
+
+# POST
+resp = gl.nondet.web.post(url, body="data", headers={})
+
+# DELETE, HEAD, PATCH
+resp = gl.nondet.web.delete(url, body=None, headers={})
+resp = gl.nondet.web.head(url, body=None, headers={})
+resp = gl.nondet.web.patch(url, body=None, headers={})
+
+# Generic request
+resp = gl.nondet.web.request(url, method='GET', body=None, headers={})
+```
+
+**Response:** `resp.status` (int), `resp.headers` (dict), `resp.body` (bytes | None)
+
+### gl.nondet.web.render(url, mode, wait_after_loaded) -> str | Image
+
+Render webpage with JavaScript execution.
+
+```python
+# Plain text
+text = gl.nondet.web.render("https://example.com", mode="text")
+
+# HTML
+html = gl.nondet.web.render("https://example.com", mode="html")
+
+# Screenshot (returns Image with .raw bytes and .pil PIL.Image)
+img = gl.nondet.web.render("https://example.com", mode="screenshot")
+
+# Wait for JS to load dynamic content
+text = gl.nondet.web.render(url, mode="text", wait_after_loaded="2000ms")
 ```
 
 ---
@@ -529,6 +578,86 @@ class Proxy(gl.Contract):
 ```
 
 **Note:** If sender not in upgraders list, `truncate()` will raise VMError.
+
+---
+
+## Events
+
+```python
+class MyContract(gl.Contract):
+    Transfer = gl.Event({"from": Address, "to": Address, "amount": u256})
+
+    @gl.public.write
+    def transfer(self, to: Address, amount: u256):
+        self.Transfer.emit({"from": gl.message.sender_address, "to": to, "amount": amount})
+```
+
+---
+
+## Special Contract Methods
+
+```python
+class MyContract(gl.Contract):
+    @gl.public.write.payable
+    def __receive__(self):
+        """Called on plain value transfers (no method specified)."""
+        pass
+
+    @gl.public.write
+    def __handle_undefined_method__(self, method_name: str, args: list, kwargs: dict):
+        """Fallback handler for calls to non-existent methods."""
+        raise ValueError(f"Unknown: {method_name}")
+
+    @gl.public.write.payable
+    def __on_errored_message__(self):
+        """Called when an emitted message with value fails. Handles refunds."""
+        pass  # default: accept refund
+```
+
+---
+
+## Debugging
+
+```python
+# Trace output (visible in validator logs)
+gl.trace("Debug:", some_var)
+gl.trace("Multiple", "args", sep=" | ")
+
+# Measure execution time (microseconds)
+elapsed = gl.trace_time_micro()
+```
+
+---
+
+## Additional Storage Types
+
+### float
+8-byte double precision. Works directly.
+
+```python
+class MyContract(gl.Contract):
+    ratio: float
+```
+
+### datetime.datetime
+Stored with timezone info.
+
+```python
+import datetime
+
+class MyContract(gl.Contract):
+    created_at: datetime.datetime
+```
+
+### Array[T, Literal[N]]
+Fixed-size array.
+
+```python
+from typing import Literal
+
+class MyContract(gl.Contract):
+    scores: Array[u256, Literal[10]]  # fixed 10 elements
+```
 
 ---
 

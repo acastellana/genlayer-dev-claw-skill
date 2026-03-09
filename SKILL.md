@@ -1,6 +1,6 @@
 ---
 name: genlayer-dev-claw-skill
-version: 1.0.0
+version: 1.1.0
 description: Build GenLayer Intelligent Contracts - Python smart contracts with LLM calls and web access. Use for writing/deploying contracts, SDK reference, CLI commands, equivalence principles, storage types. Triggers: write intelligent contract, genlayer contract, genvm, gl.Contract, deploy genlayer, genlayer CLI, genlayer SDK, DynArray, TreeMap, gl.nondet, gl.eq_principle, prompt_comparative, strict_eq, genlayer deploy, genlayer up. (For explaining GenLayer concepts, use genlayer-claw-skill instead.)
 ---
 
@@ -110,12 +110,15 @@ Replace standard Python types with GenVM storage-compatible types:
 |-------------|------------|-------|
 | `int` | `u32`, `u64`, `u256`, `i32`, `i64`, etc. | Sized integers |
 | `int` (unbounded) | `bigint` | Arbitrary precision (avoid) |
+| `float` | `float` | 8-byte double (works directly) |
+| `datetime` | `datetime.datetime` | With timezone support |
 | `list[T]` | `DynArray[T]` | Dynamic arrays |
+| fixed array | `Array[T, Literal[N]]` | Fixed-size arrays |
 | `dict[K,V]` | `TreeMap[K,V]` | Ordered maps |
 | `str` | `str` | Strings (unchanged) |
 | `bool` | `bool` | Booleans (unchanged) |
 
-**⚠️ `int` is NOT supported!** Always use sized integers.
+**⚠️ `int` is NOT supported!** Always use sized integers. In production, `int` may cause opaque `exit_code 1` crashes.
 
 ### Address Type
 ```python
@@ -201,8 +204,10 @@ result = gl.vm.run_nondet(
 
 | Function | Purpose |
 |----------|---------|
-| `gl.nondet.exec_prompt(prompt)` | Execute LLM prompt |
-| `gl.nondet.web.render(url, mode)` | Fetch web page (`mode="text"` or `"html"`) |
+| `gl.nondet.exec_prompt(prompt, images=[], response_format='text')` | LLM prompt (text/json, optional images) |
+| `gl.nondet.web.get(url)` | HTTP GET (returns Response with .status, .body) |
+| `gl.nondet.web.post(url, body=)` | HTTP POST |
+| `gl.nondet.web.render(url, mode=, wait_after_loaded=)` | Render webpage (`"text"`, `"html"`, `"screenshot"`) |
 
 **⚠️ Rules:**
 - Must be called inside equivalence principle functions
@@ -360,7 +365,8 @@ See `references/examples.md` → Log Indexer
 
 1. **GenLayer Studio**: Use `genlayer up` for local testing
 2. **Logs**: Filter by transaction hash, debug level
-3. **Print statements**: `print()` works in contracts (debug only)
+3. **`gl.trace()`**: Trace output visible in validator logs
+4. **`gl.trace_time_micro()`**: Measure execution time
 
 ## Reference Files
 - `references/sdk-api.md` - Complete SDK API reference
@@ -368,6 +374,7 @@ See `references/examples.md` → Log Indexer
 - `references/examples.md` - Full annotated contract examples (incl. production oracle)
 - `references/deployment.md` - CLI, networks, deployment workflow
 - `references/genvm-internals.md` - VM architecture, storage, ABI details
+- `references/production-learnings.md` - Hard-won lessons: storage gotchas, multimodal prompting, evidence design for AI jury, local vs studionet gaps, bridge relay tips
 
 ## Links
 - Docs: https://docs.genlayer.com
