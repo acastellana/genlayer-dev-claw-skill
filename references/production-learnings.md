@@ -116,15 +116,73 @@ uint8 constant VERDICT_REJECT = 2;
 
 Mismatch = silent wrong execution on EVM side.
 
+## exec_prompt Return Type (Critical)
+
+`gl.nondet.exec_prompt()` can return `dict` **or** `str` depending on GenVM runtime and LLM backend.
+
+**Using `json.loads(str(raw))` fails** when GenVM returns a dict — Python repr uses single
+quotes which are not valid JSON.
+
+Always use an isinstance check:
+```python
+if isinstance(raw, dict):
+    parsed = raw
+else:
+    parsed = json.loads(clean_string(raw))
+```
+
+Or use the `_parse_llm_json` helper from SKILL.md Best Practices.
+
+This was the root cause of **7 consecutive UNDETERMINED failures** in ERC-8183 bounty contracts.
+The contract worked perfectly in local tests (mock always returns str), but failed on Studionet
+where real LLM backends returned dict.
+
+## Bridge Calls Must Be Isolated for Testing
+
+`gl.evm.keccak256`, `gl.evm.MethodEncoder`, and `gl.get_contract_at` are **NOT available in
+direct test mode**. They raise `AttributeError` or `TypeError`.
+
+Wrap bridge/EVM calls in a separate function with try/except so core logic can be tested locally:
+
+```python
+def _send_bridge_verdict(self, verdict_code):
+    """Isolated bridge call — not testable in direct mode."""
+    try:
+        bridge = gl.get_contract_at(Address(self.bridge_addr))
+        bridge.emit().send_verdict(verdict_code)
+    except (AttributeError, TypeError):
+        # Running in direct test mode — bridge not available
+        pass
+```
+
+This pattern lets you unit-test all verdict logic locally while keeping bridge calls functional on Studionet.
+
+## Consensus Timing
+
+Expect **~90-180 seconds** for web+LLM contracts to reach ACCEPTED on Studionet (5 validators, real LLMs).
+
+Use generous retry settings when polling for transaction status:
+```javascript
+// JS SDK
+const result = await client.waitForTransactionReceipt(txHash, {
+    retries: 120,
+    interval: 5000  // 5s between polls
+});
+```
+
+Don't declare failure until at least 3 minutes have passed.
+
 ## Local Tests vs Studionet — The Gap
 
 | Behavior | Local (direct mode) | Studionet |
 |----------|-------------------|-----------|
-| Speed | ~0.4s per test | ~100s per write tx |
+| Speed | ~0.4s per test | ~90-180s per write tx |
 | LLMs | Mocked (identical) | 5 different real LLMs |
 | `strict_eq` on LLM text | ✅ works (mocked) | ❌ MAJORITY_DISAGREE |
 | Storage type `int` | ✅ works (Python) | ❌ TypeError/crash |
 | `prompt_non_comparative` | ❌ needs conftest patch | ✅ works natively |
+| `exec_prompt` return type | `str` (mock) | may be `dict` or `str` |
+| `gl.evm.*` (bridge/keccak) | ❌ not available | ✅ works |
 
 Local tests catch logic bugs. Studionet catches GenVM + consensus bugs. Always test on Studionet before declaring production-ready.
 

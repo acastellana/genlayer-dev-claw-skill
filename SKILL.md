@@ -1,7 +1,7 @@
 ---
 name: genlayer-dev-claw-skill
-version: 1.1.0
-description: Build GenLayer Intelligent Contracts - Python smart contracts with LLM calls and web access. Use for writing/deploying contracts, SDK reference, CLI commands, equivalence principles, storage types. Triggers: write intelligent contract, genlayer contract, genvm, gl.Contract, deploy genlayer, genlayer CLI, genlayer SDK, DynArray, TreeMap, gl.nondet, gl.eq_principle, prompt_comparative, strict_eq, genlayer deploy, genlayer up. (For explaining GenLayer concepts, use genlayer-claw-skill instead.)
+version: 1.2.0
+description: Build GenLayer Intelligent Contracts - Python smart contracts with LLM calls and web access. Use for writing/deploying contracts, SDK reference, CLI commands, equivalence principles, storage types. Triggers: write intelligent contract, genlayer contract, genvm, gl.Contract, deploy genlayer, genlayer CLI, genlayer SDK, DynArray, TreeMap, gl.nondet, gl.eq_principle, gl.vm.run_nondet, prompt_comparative, strict_eq, genvm-linter, genlayer deploy, genlayer up. (For explaining GenLayer concepts, use genlayer-claw-skill instead.)
 ---
 
 # GenLayer Intelligent Contracts
@@ -46,13 +46,20 @@ class AIContract(gl.Contract):
     
     @gl.public.write
     def analyze(self, text: str) -> None:
-        prompt = f"Analyze this text and respond with JSON: {text}"
+        prompt = f"Classify sentiment as positive, negative, or neutral. Text: {text}"
         
-        def get_analysis():
-            return gl.nondet.exec_prompt(prompt)
+        def leader():
+            raw = gl.nondet.exec_prompt(prompt)
+            return _parse_llm_json(raw)
         
-        # All validators must get the same result
-        self.result = gl.eq_principle.strict_eq(get_analysis)
+        def validator(leader_result):
+            raw = gl.nondet.exec_prompt(prompt)
+            my_result = _parse_llm_json(raw)
+            # Validators independently evaluate — compare classification
+            return leader_result.get("sentiment") == my_result.get("sentiment")
+        
+        # Leader and validator both execute independently — the 90% default
+        self.result = json.dumps(gl.vm.run_nondet(leader=leader, validator=validator))
     
     @gl.public.view
     def get_result(self) -> str:
@@ -75,10 +82,16 @@ class WebContract(gl.Contract):
     def fetch(self, url: str) -> None:
         url_copy = url  # Capture for closure
         
-        def get_page():
+        def leader():
             return gl.nondet.web.render(url_copy, mode="text")
         
-        self.content = gl.eq_principle.strict_eq(get_page)
+        def validator(leader_result):
+            # Each validator independently fetches and compares
+            my_content = gl.nondet.web.render(url_copy, mode="text")
+            return leader_result == my_content
+        
+        # Leader and validators both execute independently — the 90% default
+        self.content = gl.vm.run_nondet(leader=leader, validator=validator)
     
     @gl.public.view
     def get_content(self) -> str:
@@ -155,19 +168,41 @@ LLMs and web fetches produce different results across validators. GenLayer solve
 
 ### Equivalence Principles
 
-#### 1. Strict Equality (`strict_eq`)
-All validators must produce **identical** results.
+#### 1. Custom Leader/Validator (`gl.vm.run_nondet`) — THE DEFAULT (~90% of use cases)
+Leader fetches+evaluates, validator independently fetches+evaluates, then compares.
+Used by Rally, MergeProof, Molly.fun. This is how GenLayer is designed to work.
 ```python
-def get_data():
-    return gl.nondet.web.render(url, mode="text")
+def leader():
+    data = gl.nondet.web.render(url, mode="text")
+    return parse_price(data)
 
-result = gl.eq_principle.strict_eq(get_data)
+def validator(leader_result):
+    # Independently fetch and evaluate
+    my_data = gl.nondet.web.render(url, mode="text")
+    my_price = parse_price(my_data)
+    # Allow 5% tolerance for timing differences
+    return abs(leader_result - my_price) / my_price < 0.05
+
+result = gl.vm.run_nondet(leader=leader, validator=validator)
 ```
 
-Best for: Factual data, boolean results, exact matches.
+Best for: **Everything with web fetches or LLM calls** — which is almost every real contract.
 
-#### 2. Prompt Comparative (`prompt_comparative`)
-LLM compares leader's result against validators' results using criteria.
+#### 2. Strict Equality (`strict_eq`)
+Shortcut: all validators must produce **identical** results. NOT for LLM text outputs.
+```python
+def check_flag():
+    content = gl.nondet.web.render(url, mode="text")
+    return "maintenance" in content.lower()  # boolean → deterministic
+
+result = gl.eq_principle.strict_eq(check_flag)
+```
+
+Best for: Deterministic-only results — booleans, exact parsed values, checksums.
+**Warning:** LLMs rarely produce identical text across validators. Use `run_nondet` instead.
+
+#### 3. Prompt Comparative (`prompt_comparative`)
+Shortcut: LLM compares leader's result against validators' results. Extra cost.
 ```python
 def get_analysis():
     return gl.nondet.exec_prompt(prompt)
@@ -178,10 +213,13 @@ result = gl.eq_principle.prompt_comparative(
 )
 ```
 
-Best for: LLM tasks where semantic equivalence matters.
+Best for: Simple LLM classifications where you want LLM-based semantic comparison.
 
-#### 3. Prompt Non-Comparative (`prompt_non_comparative`)
-Validators verify the leader's result meets criteria (don't re-execute).
+#### 4. Prompt Non-Comparative (`prompt_non_comparative`)
+**ONLY for pure NLP tasks with NO web fetching.** Validators don't re-execute — they
+only check whether the leader's output looks reasonable. Using this with `web.get` or
+`web.render` means validators blindly trust the leader's fetch — this defeats the
+entire purpose of multi-validator consensus.
 ```python
 result = gl.eq_principle.prompt_non_comparative(
     lambda: input_data,  # What to process
@@ -190,15 +228,7 @@ result = gl.eq_principle.prompt_non_comparative(
 )
 ```
 
-Best for: Expensive operations, subjective tasks.
-
-#### 4. Custom Leader/Validator Pattern
-```python
-result = gl.vm.run_nondet(
-    leader=lambda: expensive_computation(),
-    validator=lambda leader_result: verify(leader_result)
-)
-```
+Best for: Pure text NLP with no external data. Example: summarize a string passed as argument.
 
 ### Non-Deterministic Functions
 
@@ -329,15 +359,62 @@ Output ONLY valid JSON, no other text.
 - **Simplify logic**: Clear contract flow reduces attack surface
 
 ### Error Handling
-```python
-from genlayer import UserError
 
+Use `gl.vm.UserError` (not `from genlayer import UserError`). Use error prefixes for
+easier debugging and monitoring:
+
+```python
 @gl.public.write
-def safe_operation(self, value: int) -> None:
-    if value <= 0:
-        raise UserError("Value must be positive")
-    # ... proceed
+def safe_operation(self, value: u256, url: str) -> None:
+    # [EXPECTED] — business logic validation
+    if value == u256(0):
+        raise gl.vm.UserError("[EXPECTED] Value must be positive")
+    
+    def leader():
+        resp = gl.nondet.web.get(url)
+        # [EXTERNAL] — API/web fetch failures
+        if resp.status != 200:
+            raise gl.vm.UserError(f"[EXTERNAL] Fetch failed: {resp.status}")
+        # [TRANSIENT] — 5xx, timeouts (caller should retry)
+        if resp.status >= 500:
+            raise gl.vm.UserError(f"[TRANSIENT] Server error: {resp.status}")
+        return resp.body
+    
+    def validator(leader_result):
+        try:
+            my_resp = gl.nondet.web.get(url)
+            return leader_result == my_resp.body
+        except Exception:
+            # [LLM_ERROR] — LLM failures
+            raise gl.vm.UserError("[LLM_ERROR] Validation fetch failed")
+    
+    self.result = gl.vm.run_nondet(leader=leader, validator=validator)
 ```
+
+### LLM Response Parsing (`_parse_llm_json`)
+
+`exec_prompt` can return `dict` **or** `str` depending on the GenVM runtime and LLM backend.
+Using bare `json.loads(str(raw))` fails when GenVM returns a dict (Python repr uses single quotes,
+not valid JSON). **Always use this helper:**
+
+```python
+import json
+
+def _parse_llm_json(raw):
+    """Parse LLM response — handles both string and dict returns from exec_prompt."""
+    if isinstance(raw, dict):
+        return raw
+    s = str(raw).strip()
+    s = s.replace("```json", "").replace("```", "").strip()
+    start = s.find("{")
+    end = s.rfind("}") + 1
+    if start >= 0 and end > start:
+        s = s[start:end]
+    s = s.replace("'", '"')
+    return json.loads(s)
+```
+
+This was the root cause of 7 consecutive UNDETERMINED failures in ERC-8183 bounty contracts.
 
 ### Memory Management
 ```python
@@ -360,6 +437,37 @@ See `references/examples.md` → Football Prediction Market
 
 ### Vector Search / Embeddings
 See `references/examples.md` → Log Indexer
+
+## Tooling
+
+### GenVM Linter (mandatory pre-deploy)
+
+Run before every deploy — catches common mistakes that cause silent crashes on GenVM:
+
+```bash
+pip install genvm-linter  # or: pipx install genvm-linter
+genvm-lint check contract.py    # lint + validate (recommended)
+genvm-lint lint contract.py     # fast AST checks only (~50ms)
+```
+
+**Common catches:**
+- `ValueError` → should be `gl.vm.UserError`
+- Unreachable nondet blocks
+- Forbidden imports: `random`, `os`, `time` (non-deterministic)
+- Incorrect storage type usage
+
+### Direct Mode Testing
+
+Test locally without Studionet — catches logic bugs fast (~0.4s vs ~100s):
+
+```bash
+pip install genlayer-test
+# Write pytest tests, run locally against mocked GenVM
+# See: https://github.com/genlayerlabs/genlayer-testing-suite
+```
+
+Local tests catch Python/logic bugs. Studionet catches GenVM + consensus bugs.
+Always test on Studionet before declaring production-ready.
 
 ## Debugging
 
